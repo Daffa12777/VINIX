@@ -8,3 +8,4 @@ models/*.pt
 !models/README.md
 runs/
 runs_road/
+.streamlit/secrets.toml
