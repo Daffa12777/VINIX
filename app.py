@@ -32,6 +32,9 @@ CLASS_COLORS = {0: "#C0392B", 1: "#D98A2B", 2: "#7A7A72"}
 #   "gemini-2.5-flash" (stabil), "gemini-flash-latest", "gemini-3.6-flash"
 GEMINI_MODEL = "gemini-2.5-flash"
 
+# Nama manual acuan (dipakai di rekomendasi & catatan)
+MANUAL_REF = "Manual Bina Marga No. 001-02/M/BM/2011"
+
 # ----------------------------------------------------------------------
 # Style (Inter, palet merah/cream/abu, 3D + animasi)
 # ----------------------------------------------------------------------
@@ -54,7 +57,20 @@ st.markdown("""
 html,body,[class*="css"],.stApp,input,button,select,textarea{
   font-family:'Inter',system-ui,sans-serif !important; color:var(--ink);
 }
-#MainMenu,footer,header[data-testid="stHeader"]{visibility:hidden; height:0;}
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"]{visibility:hidden; height:0;}
+header[data-testid="stHeader"]{background:transparent;}
+/* sidebar selalu tampil + tombol buka/tutup terlihat */
+section[data-testid="stSidebar"]{visibility:visible !important;}
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stExpandSidebarButton"]{
+  visibility:visible !important; opacity:1 !important; z-index:1000 !important;}
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="stExpandSidebarButton"] button{
+  background:var(--red) !important; color:#fff !important; border:none !important;
+  box-shadow:0 8px 18px -8px rgba(140,32,24,.6) !important;}
+[data-testid="stSidebarCollapsedControl"] button *,
+[data-testid="stExpandSidebarButton"] button *{color:#fff !important; fill:#fff !important;}
 ::selection{background:var(--red); color:#fff;}
 .block-container{padding-top:1.4rem; padding-bottom:3rem; max-width:1180px;
   animation:pageUp .8s var(--eo) both;}
@@ -266,17 +282,19 @@ def _fallback_insight(total, counts, avg_conf):
         prioritas = ("Tidak ada kerusakan struktural mendesak; fokus pada pemantauan rutin "
                      "dan pemeriksaan kelengkapan manhole.")
 
-    # rekomendasi per jenis
+    # rekomendasi per jenis (mengacu Manual Bina Marga)
     rek = []
     if pot:
-        rek.append("Lubang: bersihkan area, lalu lakukan penambalan (patching) dengan "
-                   "campuran aspal panas/dingin dan padatkan hingga rata.")
+        rek.append("Lubang: lakukan penambalan lubang sesuai Metode P5 - gali hingga "
+                   "lapisan keras, isi agregat kelas A berlapis, laburkan prime coat, "
+                   "tebar campuran aspal dingin, lalu padatkan hingga rata.")
     if cra:
-        rek.append("Retakan: lakukan crack sealing (pengisian celah) untuk mencegah air "
-                   "masuk ke lapisan bawah dan memperlambat kerusakan.")
+        rek.append("Retakan: untuk retak halus (<2 mm) gunakan Metode P3 (penutupan retak) "
+                   "dengan campuran aspal emulsi dan pasir kasar; untuk retak lebih lebar "
+                   "(>2 mm) gunakan Metode P4 (pengisian retak).")
     if man:
-        rek.append("Manhole: pastikan elevasi tutup rata dengan permukaan; sesuaikan bila "
-                   "menonjol atau ambles agar tidak membahayakan.")
+        rek.append("Manhole: pastikan elevasi tutup rata dengan permukaan aspal; sesuaikan "
+                   "bila menonjol atau ambles. Manhole bukan kerusakan perkerasan.")
     if not rek:
         rek.append("Lakukan inspeksi lanjutan dan dokumentasi berkala untuk memantau kondisi.")
     rek_txt = " ".join(rek)
@@ -299,8 +317,83 @@ def _fallback_insight(total, counts, avg_conf):
         f"Catatan Keselamatan: Pasang rambu atau marka sementara di sekitar kerusakan parah "
         f"untuk melindungi pengguna jalan hingga perbaikan selesai.\n"
         f"Keterbatasan: Ini ringkasan otomatis berbasis aturan. Akurasi model masih terbatas, "
-        f"sehingga hasil perlu diverifikasi petugas sebelum dijadikan dasar perbaikan."
+        f"sehingga hasil perlu diverifikasi petugas sebelum dijadikan dasar perbaikan.\n"
+        f"Rujukan: Metode perbaikan mengacu pada {MANUAL_REF}."
     )
+
+
+# ----------------------------------------------------------------------
+# Referensi dari PDF (dibaca langsung saat runtime, verbatim/lengkap)
+# ----------------------------------------------------------------------
+# Letakkan file PDF manual di salah satu lokasi berikut di dalam repo.
+def _find_pdf():
+    candidates = [
+        Path("reference/manual_binamarga.pdf"),
+        Path("manual_binamarga.pdf"),
+        Path("reference/no-001-02mbm2011-manual-perbaikan-standar-untuk-pemeliharaan-rutin-jalan.pdf"),
+        Path("no-001-02mbm2011-manual-perbaikan-standar-untuk-pemeliharaan-rutin-jalan.pdf"),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    refdir = Path("reference")
+    if refdir.exists():
+        pdfs = sorted(refdir.glob("*.pdf"))
+        if pdfs:
+            return pdfs[0]
+    return None
+
+
+# Penanda bagian metode di manual, dipetakan ke kelas deteksi.
+METODE_MARKERS = {
+    "Crack": ["Metode Perbaikan P3", "Metode Perbaikan P4"],
+    "Pothole": ["Metode Perbaikan P5"],
+    "Manhole": [],  # tidak ada metode P-standar khusus pada manual
+}
+
+
+@st.cache_data(show_spinner=False)
+def _load_pdf_text(path_str):
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(path_str)
+        return "\n".join((p.extract_text() or "") for p in reader.pages)
+    except Exception:
+        return ""
+
+
+def _extract_section(text, marker, maxlen=4000):
+    """Ambil isi bagian metode (verbatim) dari penanda sampai metode berikutnya."""
+    positions = [m.start() for m in re.finditer(re.escape(marker), text)]
+    if not positions:
+        return ""
+    idx = positions[-1]  # kemunculan terakhir = isi metode (bukan daftar isi)
+    rest = text[idx:]
+    nxt = re.search(r"Metode Perbaikan [PUK]\s?\d", rest[len(marker):])
+    end = len(marker) + nxt.start() if nxt else min(len(rest), maxlen)
+    return rest[:min(end, maxlen)].strip()
+
+
+def referensi_pdf(counts):
+    """Kumpulkan kutipan LENGKAP metode dari PDF sesuai kelas yang terdeteksi."""
+    pdf = _find_pdf()
+    if pdf is None:
+        return ""
+    full = _load_pdf_text(str(pdf))
+    if not full:
+        return ""
+    blocks, seen = [], set()
+    for kelas in ("Pothole", "Crack", "Manhole"):
+        if counts.get(kelas, 0) <= 0:
+            continue
+        for marker in METODE_MARKERS.get(kelas, []):
+            if marker in seen:
+                continue
+            seen.add(marker)
+            sec = _extract_section(full, marker)
+            if sec:
+                blocks.append(sec)
+    return "\n\n----------\n\n".join(blocks)
 
 
 def get_ai_insight(total, counts, avg_conf, per_class_conf):
@@ -321,6 +414,17 @@ def get_ai_insight(total, counts, avg_conf, per_class_conf):
             rincian.append(f"- {name}: {c} objek{pc_txt}")
     rincian_txt = "\n".join(rincian) if rincian else "- Tidak ada kerusakan terdeteksi"
 
+    # Referensi verbatim (lengkap) dari PDF manual, sesuai kelas terdeteksi
+    ref = referensi_pdf(counts)
+    ref_blok = ""
+    if ref:
+        ref_blok = (
+            f"\n\n=== REFERENSI RESMI (kutipan LENGKAP dari {MANUAL_REF}) ===\n"
+            f"Gunakan kutipan berikut sebagai dasar utama rekomendasi. Pertahankan detail "
+            f"penting (kode kerusakan, bahan, komposisi, dan langkah kerja) dan sebutkan "
+            f"kode metodenya (mis. P3/P4/P5):\n\n{ref}\n=== AKHIR REFERENSI ==="
+        )
+
     prompt = f"""Kamu adalah insinyur perkerasan jalan (pavement engineer) sekaligus
 asisten analisis untuk sistem deteksi kerusakan jalan berbasis computer vision (model YOLO)
 yang mendukung dinas infrastruktur / Dinas PU.
@@ -330,22 +434,24 @@ Hasil deteksi pada satu gambar jalan:
 Total objek terdeteksi: {total}
 Rincian:
 {rincian_txt}
-Rata-rata keyakinan model keseluruhan: {avg_conf*100:.0f}%
+Rata-rata keyakinan model keseluruhan: {avg_conf*100:.0f}%{ref_blok}
 
 Tulis analisis LENGKAP dan MENDALAM dalam Bahasa Indonesia. Gunakan struktur berlabel
 persis seperti di bawah ini, setiap bagian diawali labelnya sendiri di baris baru.
-Setiap bagian 2-4 kalimat yang konkret (sebutkan angka deteksi bila relevan):
+Setiap bagian konkret (sebutkan angka deteksi bila relevan):
 
 Kondisi Umum: ringkas kondisi jalan secara keseluruhan berdasarkan jumlah dan jenis kerusakan.
 Tingkat Keparahan: nyatakan rendah/sedang/tinggi beserta ALASAN teknisnya, dan kaitkan dengan tingkat keyakinan model.
 Prioritas Penanganan: urutkan kerusakan mana yang harus didahulukan dan mengapa.
-Rekomendasi Tindakan: langkah perbaikan praktis dan spesifik per jenis kerusakan (mis. tambal/patching untuk lubang, crack sealing untuk retakan, penyesuaian elevasi untuk manhole), termasuk metode yang lazim dipakai.
+Rekomendasi Tindakan: jelaskan langkah perbaikan secara RINCI per jenis kerusakan. Bila tersedia REFERENSI RESMI di atas, WAJIB mengacu padanya, sebutkan kode metode (P3/P4/P5) dan kode kerusakan, serta uraikan bahan dan langkah kerjanya secara lengkap (jangan diringkas berlebihan).
 Estimasi Urgensi: perkiraan seberapa cepat harus ditangani (mis. segera, dalam beberapa minggu, atau pemantauan berkala).
 Catatan Keselamatan: risiko bagi pengguna jalan dan langkah pengamanan sementara (mis. rambu, marka, penutupan jalur).
 Keterbatasan: ingatkan bahwa hasil model perlu diverifikasi petugas dan akurasi masih terbatas.
+Rujukan: sebutkan bahwa metode mengacu pada {MANUAL_REF} (bila referensi tersedia).
 
-Aturan penulisan: gaya profesional dan edukatif, boleh 8-14 kalimat total, tanpa emoji,
-JANGAN gunakan tanda markdown seperti bintang atau pagar, pisahkan tiap bagian dengan baris baru."""
+Aturan penulisan: gaya profesional dan edukatif, boleh panjang dan rinci pada bagian
+Rekomendasi Tindakan, tanpa emoji, JANGAN gunakan tanda markdown seperti bintang atau pagar,
+pisahkan tiap bagian dengan baris baru."""
 
     try:
         from google import genai
@@ -366,7 +472,7 @@ JANGAN gunakan tanda markdown seperti bintang atau pagar, pisahkan tiap bagian d
 SECTION_LABELS = [
     "Kondisi Umum", "Tingkat Keparahan", "Prioritas Penanganan",
     "Rekomendasi Tindakan", "Estimasi Urgensi", "Catatan Keselamatan",
-    "Keterbatasan",
+    "Keterbatasan", "Rujukan",
 ]
 
 
@@ -712,6 +818,7 @@ st.markdown(f"""
 st.markdown(
     '<p class="disc">Catatan: sistem ini adalah alat bantu penyaring awal, bukan pengganti '
     'inspeksi teknik. Akurasi model masih terbatas (baseline mAP@50 0,474), jadi keputusan '
-    'perbaikan akhir tetap memerlukan verifikasi petugas di lapangan.</p>',
+    'perbaikan akhir tetap memerlukan verifikasi petugas di lapangan. Rekomendasi metode '
+    'perbaikan merujuk pada Manual Bina Marga No. 001-02/M/BM/2011.</p>',
     unsafe_allow_html=True,
 )
