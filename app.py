@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 # ----------------------------------------------------------------------
@@ -30,7 +31,7 @@ CLASS_COLORS = {0: "#C0392B", 1: "#D98A2B", 2: "#7A7A72"}
 
 # Model Gemini. Ganti bila akun tak punya akses:
 #   "gemini-2.5-flash" (stabil), "gemini-flash-latest", "gemini-3.6-flash"
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.6-flash"
 
 # Nama manual acuan (dipakai di rekomendasi & catatan)
 MANUAL_REF = "Manual Bina Marga No. 001-02/M/BM/2011"
@@ -129,35 +130,6 @@ hr{border:none; border-top:1px solid var(--line) !important; margin:1.5rem 0;}
 
 .badge{display:inline-block; padding:.2rem .7rem; border-radius:999px;
   font-size:.75rem; color:#fff; font-weight:700; box-shadow:0 4px 10px -5px rgba(0,0,0,.4);}
-
-/* ---------------- AI card (3D) ---------------- */
-.ai-card{position:relative; background:var(--card); border:1px solid var(--line);
-  border-radius:20px; padding:1.3rem 1.5rem; overflow:hidden;
-  box-shadow:0 30px 56px -34px rgba(120,60,30,.45), inset 0 1px 0 #fff;
-  animation:rise .6s var(--eo) both;}
-.ai-card::before{content:""; position:absolute; left:0; top:0; bottom:0; width:5px;
-  background:linear-gradient(180deg,var(--red),var(--red-soft));}
-.ai-badge{display:inline-block; background:linear-gradient(135deg,var(--red),var(--red-deep));
-  color:#fff; font-size:.72rem; font-weight:800; padding:5px 13px; border-radius:999px;
-  letter-spacing:.03em; box-shadow:0 8px 16px -8px rgba(140,32,24,.6);}
-.ai-badge.auto{background:linear-gradient(135deg,#9a938a,#7c766e);}
-.ai-body{margin:.8rem 0 0; font-size:1rem; line-height:1.75; color:var(--ink); white-space:pre-wrap;}
-
-/* analisis terstruktur */
-.ins-head{display:flex; align-items:center; gap:12px; margin-bottom:1rem; flex-wrap:wrap;}
-.ins-title{font-weight:900; font-size:1.2rem; letter-spacing:-.01em;}
-.ins-row{display:flex; gap:14px; padding:.8rem 0; border-top:1px solid var(--line2);
-  animation:rise .5s var(--eo) both;}
-.ins-num{width:30px; height:30px; flex:0 0 30px; border-radius:9px; display:grid;
-  place-items:center; font-weight:800; font-size:.85rem; color:#fff;
-  background:linear-gradient(135deg,var(--red),var(--red-deep));
-  box-shadow:0 8px 16px -8px rgba(140,32,24,.55), inset 0 1px 0 rgba(255,255,255,.35);}
-.ins-num.g{background:linear-gradient(135deg,#8a857c,#635f58);
-  box-shadow:0 8px 16px -8px rgba(70,66,60,.5), inset 0 1px 0 rgba(255,255,255,.3);}
-.ins-label{font-weight:800; color:var(--red); font-size:.95rem; margin-bottom:.15rem;
-  letter-spacing:.01em;}
-.ins-label.g{color:#6c665e;}
-.ins-text{color:var(--ink); font-size:.95rem; line-height:1.6;}
 
 .note{background:linear-gradient(180deg,#fbf4e9,#f6ecdb); border:1px solid var(--line);
   border-radius:14px; padding:.9rem 1.1rem; font-size:.9rem; color:#7c6a52; line-height:1.6;
@@ -309,6 +281,10 @@ def _fallback_insight(total, counts, avg_conf):
 
     return (
         f"Kondisi Umum: Terdeteksi {total} objek pada gambar - {rincian_txt}.\n"
+        f"Analisis Teknis: Sistem mengidentifikasi jenis kerusakan dengan rata-rata "
+        f"keyakinan {avg_conf*100:.0f}%. Lubang mengindikasikan kegagalan lapisan "
+        f"perkerasan hingga ke pondasi, sedangkan retakan menandakan tahap awal kerusakan "
+        f"yang dapat berkembang bila air meresap ke lapisan bawah.\n"
         f"Tingkat Keparahan: Diperkirakan {sev}, dengan rata-rata keyakinan model "
         f"{avg_conf*100:.0f}%.\n"
         f"Prioritas Penanganan: {prioritas}\n"
@@ -374,15 +350,32 @@ def _extract_section(text, marker, maxlen=4000):
     return rest[:min(end, maxlen)].strip()
 
 
+def _extract_ketentuan_umum(text, maxlen=1400):
+    """Ambil bab Ketentuan Umum + Tabel 1 (konteks & kategori kerusakan)."""
+    # kemunculan setelah daftar isi (posisi jauh dari awal)
+    positions = [m.start() for m in re.finditer(r"Ketentuan Umum", text)]
+    idx = next((p for p in positions if p > 10000), positions[-1] if positions else -1)
+    if idx == -1:
+        return ""
+    rest = text[idx:]
+    j = rest.find("5.1.")
+    end = j if j != -1 else min(len(rest), maxlen)
+    return rest[:min(end, maxlen)].strip()
+
+
 def referensi_pdf(counts):
-    """Kumpulkan kutipan LENGKAP metode dari PDF sesuai kelas yang terdeteksi."""
+    """Kumpulkan referensi LENGKAP dari PDF: ketentuan umum + metode per kelas."""
     pdf = _find_pdf()
     if pdf is None:
         return ""
     full = _load_pdf_text(str(pdf))
     if not full:
         return ""
-    blocks, seen = [], set()
+    blocks = []
+    ku = _extract_ketentuan_umum(full)
+    if ku:
+        blocks.append("[KETENTUAN UMUM & KATEGORI KERUSAKAN]\n" + ku)
+    seen = set()
     for kelas in ("Pothole", "Crack", "Manhole"):
         if counts.get(kelas, 0) <= 0:
             continue
@@ -392,7 +385,7 @@ def referensi_pdf(counts):
             seen.add(marker)
             sec = _extract_section(full, marker)
             if sec:
-                blocks.append(sec)
+                blocks.append("[METODE PERBAIKAN]\n" + sec)
     return "\n\n----------\n\n".join(blocks)
 
 
@@ -425,9 +418,9 @@ def get_ai_insight(total, counts, avg_conf, per_class_conf):
             f"kode metodenya (mis. P3/P4/P5):\n\n{ref}\n=== AKHIR REFERENSI ==="
         )
 
-    prompt = f"""Kamu adalah insinyur perkerasan jalan (pavement engineer) sekaligus
-asisten analisis untuk sistem deteksi kerusakan jalan berbasis computer vision (model YOLO)
-yang mendukung dinas infrastruktur / Dinas PU.
+    prompt = f"""Kamu adalah insinyur perkerasan jalan (pavement engineer) senior yang menulis
+LAPORAN ANALISIS TEKNIS untuk dinas infrastruktur / Dinas PU, berdasarkan hasil sistem
+deteksi kerusakan jalan berbasis computer vision (model YOLO).
 Model mendeteksi tiga kelas: Pothole (lubang), Crack (retakan), Manhole (tutup gorong-gorong).
 
 Hasil deteksi pada satu gambar jalan:
@@ -436,27 +429,35 @@ Rincian:
 {rincian_txt}
 Rata-rata keyakinan model keseluruhan: {avg_conf*100:.0f}%{ref_blok}
 
-Tulis analisis LENGKAP dan MENDALAM dalam Bahasa Indonesia. Gunakan struktur berlabel
-persis seperti di bawah ini, setiap bagian diawali labelnya sendiri di baris baru.
-Setiap bagian konkret (sebutkan angka deteksi bila relevan):
+Tulis laporan LENGKAP, LOGIS, dan PROFESIONAL dalam Bahasa Indonesia dengan penalaran
+bertahap (kondisi -> diagnosis -> justifikasi -> tindakan). Gunakan struktur berlabel
+PERSIS seperti di bawah (setiap bagian diawali labelnya sendiri di baris baru).
+Tulis argumen yang logis: setiap rekomendasi HARUS disertai ALASAN teknisnya.
 
-Kondisi Umum: ringkas kondisi jalan secara keseluruhan berdasarkan jumlah dan jenis kerusakan.
-Tingkat Keparahan: nyatakan rendah/sedang/tinggi beserta ALASAN teknisnya, dan kaitkan dengan tingkat keyakinan model.
-Prioritas Penanganan: urutkan kerusakan mana yang harus didahulukan dan mengapa.
-Rekomendasi Tindakan: jelaskan langkah perbaikan secara RINCI per jenis kerusakan. Bila tersedia REFERENSI RESMI di atas, WAJIB mengacu padanya, sebutkan kode metode (P3/P4/P5) dan kode kerusakan, serta uraikan bahan dan langkah kerjanya secara lengkap (jangan diringkas berlebihan).
-Estimasi Urgensi: perkiraan seberapa cepat harus ditangani (mis. segera, dalam beberapa minggu, atau pemantauan berkala).
-Catatan Keselamatan: risiko bagi pengguna jalan dan langkah pengamanan sementara (mis. rambu, marka, penutupan jalur).
-Keterbatasan: ingatkan bahwa hasil model perlu diverifikasi petugas dan akurasi masih terbatas.
-Rujukan: sebutkan bahwa metode mengacu pada {MANUAL_REF} (bila referensi tersedia).
+Kondisi Umum: gambarkan kondisi jalan secara objektif berdasarkan jumlah dan jenis kerusakan yang terdeteksi.
+Analisis Teknis: jelaskan mekanisme kerusakan dan kaitannya. Bila tersedia REFERENSI RESMI, kaitkan temuan dengan kode kerusakan (mis. 111 Lubang, 117 Retak buaya, 118 Retak garis) dan kategori pada Tabel 1. Pertimbangkan pula keandalan deteksi berdasarkan nilai confidence.
+Tingkat Keparahan: nyatakan rendah/sedang/tinggi dengan argumen kuantitatif (jumlah, jenis, confidence) dan implikasinya bila dibiarkan.
+Prioritas Penanganan: urutkan kerusakan yang harus didahulukan disertai alasan (keselamatan, laju perkembangan kerusakan, biaya).
+Rekomendasi Tindakan: uraikan langkah perbaikan secara RINCI dan berurutan per jenis kerusakan. WAJIB mengacu pada REFERENSI RESMI: sebutkan kode metode (P3/P4/P5), bahan dan komposisinya, serta langkah kerja sesuai manual. Jelaskan MENGAPA metode itu dipilih.
+Estimasi Urgensi: perkirakan tenggat penanganan (segera/beberapa minggu/pemantauan) beserta dasar pertimbangannya.
+Catatan Keselamatan: risiko bagi pengguna jalan dan langkah pengamanan sementara (rambu, marka, pengalihan lalu lintas) mengacu langkah persiapan pada manual.
+Keterbatasan: jelaskan batas keandalan model (akurasi terbatas, kemungkinan false positive/negative) dan perlunya verifikasi petugas.
+Rujukan: sebutkan bahwa metode & kategori mengacu pada {MANUAL_REF}.
 
-Aturan penulisan: gaya profesional dan edukatif, boleh panjang dan rinci pada bagian
-Rekomendasi Tindakan, tanpa emoji, JANGAN gunakan tanda markdown seperti bintang atau pagar,
+Aturan penulisan: gaya laporan teknis yang profesional dan runtut, boleh panjang dan
+mendalam terutama pada Analisis Teknis dan Rekomendasi Tindakan, sebutkan angka/kode
+secara spesifik, tanpa emoji, JANGAN gunakan tanda markdown seperti bintang atau pagar,
 pisahkan tiap bagian dengan baris baru."""
 
     try:
         from google import genai
         client = genai.Client(api_key=key)
-        resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+        try:
+            resp = client.models.generate_content(
+                model=GEMINI_MODEL, contents=prompt, config={"temperature": 0.3}
+            )
+        except Exception:
+            resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
         text = (getattr(resp, "text", "") or "").strip()
         if text:
             return text, "ai"
@@ -467,23 +468,48 @@ pisahkan tiap bagian dengan baris baru."""
 
 
 # ----------------------------------------------------------------------
-# Render analisis jadi kartu terstruktur (label tebal + isi rapi)
+# Render analisis jadi SLIDE (Times New Roman + bold otomatis pada
+# bagian penting: persentase, tingkat keparahan, kode metode, urgensi)
 # ----------------------------------------------------------------------
 SECTION_LABELS = [
-    "Kondisi Umum", "Tingkat Keparahan", "Prioritas Penanganan",
+    "Kondisi Umum", "Analisis Teknis", "Tingkat Keparahan", "Prioritas Penanganan",
     "Rekomendasi Tindakan", "Estimasi Urgensi", "Catatan Keselamatan",
     "Keterbatasan", "Rujukan",
 ]
+
+# Kata/pola yang akan otomatis ditebalkan (dianggap penting bagi pembaca awam)
+_BOLD_PATTERNS = [
+    r"\b\d{1,3}\s?%",                                   # persentase, mis. 77%
+    r"\b(rendah|sedang|tinggi)\b",                        # tingkat keparahan
+    r"\bMetode\s+Perbaikan\s+P[345]\b",                  # kode metode lengkap
+    r"\bP[345]\b",                                        # kode metode singkat
+    r"\bKode\s+\d+\b",                                    # kode kerusakan (mis. Kode 111)
+    r"\bsegera\b",                                        # urgensi tinggi
+    r"\b\d+\s?(lubang|retakan|objek|entitas|pothole|crack)\b",  # jumlah temuan
+]
+_BOLD_RE = re.compile("|".join(_BOLD_PATTERNS), re.IGNORECASE)
 
 
 def _esc(s):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
+def _bold_important(escaped_text):
+    """Bungkus frasa penting dengan <strong> pada teks yang sudah di-escape."""
+    return _BOLD_RE.sub(lambda m: f"<strong>{m.group(0)}</strong>", escaped_text)
+
+
 def _parse_sections(text):
-    """Pisah teks berlabel 'Label: isi' menjadi daftar (label, isi)."""
-    pat = re.compile(r"(" + "|".join(re.escape(l) for l in SECTION_LABELS) + r")\s*:\s*",
-                     re.IGNORECASE)
+    """
+    Pisah teks menjadi daftar (label, isi). Mendukung dua gaya penulisan LLM:
+    - 'Kondisi Umum: isi langsung di baris yang sama'
+    - 'Kondisi Umum' (judul di baris sendiri, tanpa titik dua, isi di baris berikutnya)
+    Label WAJIB berada di awal baris agar tidak salah tangkap kata di tengah kalimat.
+    """
+    pat = re.compile(
+        r"^[ \t]*(" + "|".join(re.escape(l) for l in SECTION_LABELS) + r")\s*:?[ \t]*",
+        re.IGNORECASE | re.MULTILINE,
+    )
     matches = list(pat.finditer(text))
     if not matches:
         return []
@@ -492,32 +518,144 @@ def _parse_sections(text):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         body = text[start:end].strip().strip("\n").strip()
-        out.append((m.group(1), body))
+        if body:
+            out.append((m.group(1), body))
     return out
 
 
-def build_insight_html(text, src):
+def build_insight_slides_html(text, src):
+    """
+    Bangun tampilan analisis sebagai SLIDE (satu bagian per slide) dengan
+    navigasi Sebelumnya/Berikutnya, font Times New Roman, dan penebalan
+    otomatis pada kalimat/istilah penting.
+    """
     is_ai = (src == "ai")
-    badge = "Dijelaskan AI (Gemini)" if is_ai else "Ringkasan otomatis"
-    bcls = "ai-badge" if is_ai else "ai-badge auto"
-    g = "" if is_ai else " g"
+    badge_text = "Dijelaskan AI (Gemini)" if is_ai else "Ringkasan Otomatis"
+    accent = "#c0392b" if is_ai else "#7c766e"
+    accent_deep = "#9c2a20" if is_ai else "#5f5a53"
 
     sections = _parse_sections(text)
-    head = (f'<div class="ins-head"><span class="{bcls}">{badge}</span>'
-            f'<span class="ins-title">Analisis Kondisi Jalan</span></div>')
-
     if not sections:
-        return f'<div class="ai-card">{head}<div class="ai-body">{_esc(text)}</div></div>'
+        sections = [("Analisis", text)]
 
-    rows = ""
-    for idx, (label, body) in enumerate(sections, 1):
-        rows += (
-            f'<div class="ins-row" style="animation-delay:{(idx-1)*0.05:.2f}s">'
-            f'<div class="ins-num{g}">{idx}</div>'
-            f'<div><div class="ins-label{g}">{_esc(label)}</div>'
-            f'<div class="ins-text">{_esc(body)}</div></div></div>'
-        )
-    return f'<div class="ai-card">{head}{rows}</div>'
+    slides_html = []
+    for idx, (label, body) in enumerate(sections):
+        body_html = _bold_important(_esc(body)).replace("\n", "<br><br>")
+        slides_html.append(f"""
+        <div class="tnr-slide" data-idx="{idx}" style="display:{'block' if idx == 0 else 'none'}; flex:1; min-height:0;">
+          <div class="tnr-slide-scroll">
+            <div class="tnr-slide-label">{_esc(label)}</div>
+            <div class="tnr-slide-body">{body_html}</div>
+          </div>
+        </div>
+        """)
+
+    dots = "".join(
+        f'<span class="tnr-dot" data-goto="{i}"></span>' for i in range(len(sections))
+    )
+
+    html = f"""
+    <div class="tnr-wrap">
+      <style>
+        html, body {{ margin:0; padding:0; }}
+        .tnr-wrap {{
+          font-family: 'Times New Roman', Times, serif;
+          background: #ffffff;
+          border: 1px solid #e7ddcc;
+          border-left: 6px solid {accent};
+          border-radius: 18px;
+          padding: 1.3rem 1.6rem 1rem;
+          box-shadow: 0 20px 40px -28px rgba(120,60,30,.4);
+          box-sizing: border-box;
+          height: 480px;
+          display: flex;
+          flex-direction: column;
+        }}
+        .tnr-head {{
+          display:flex; align-items:center; justify-content:space-between;
+          flex-wrap: wrap; gap: 10px; margin-bottom: .5rem; flex: 0 0 auto;
+        }}
+        .tnr-badge {{
+          display:inline-block; background: linear-gradient(135deg, {accent}, {accent_deep});
+          color:#fff; font-family:'Inter',system-ui,sans-serif; font-size:.72rem;
+          font-weight:800; padding:5px 13px; border-radius:999px; letter-spacing:.03em;
+        }}
+        .tnr-title {{
+          font-weight:700; font-size:1.3rem; color:#2c2622;
+        }}
+        .tnr-slide-scroll {{
+          height: 100%; overflow-y: auto; padding-right: 6px; box-sizing: border-box;
+        }}
+        .tnr-slide-label {{
+          font-weight:700; font-size:1.65rem; color:{accent}; margin: .2rem 0 .8rem;
+          letter-spacing:.01em; border-bottom: 2px solid {accent}; padding-bottom:.35rem;
+          display:inline-block;
+        }}
+        .tnr-slide-body {{
+          font-size:1.08rem; line-height:1.85; color:#2c2622; text-align: justify;
+        }}
+        .tnr-slide-body strong {{ color: {accent_deep}; }}
+        .tnr-nav {{
+          display:flex; align-items:center; justify-content:space-between;
+          margin-top: .8rem; padding-top: .8rem; border-top: 1px solid #f0e8da;
+          font-family:'Inter',system-ui,sans-serif; flex: 0 0 auto;
+        }}
+        .tnr-btn {{
+          background: linear-gradient(135deg, {accent}, {accent_deep});
+          color:#fff; border:none; border-radius:10px; padding:.55rem 1.1rem;
+          font-weight:700; font-size:.88rem; cursor:pointer;
+        }}
+        .tnr-btn:disabled {{ opacity:.35; cursor:default; }}
+        .tnr-dots {{ display:flex; gap:6px; }}
+        .tnr-dot {{
+          width:8px; height:8px; border-radius:50%; background:#e7ddcc; cursor:pointer;
+        }}
+        .tnr-dot.active {{ background: {accent}; }}
+        .tnr-counter {{ font-size:.8rem; color:#8a8178; font-family:'Inter',system-ui,sans-serif; }}
+      </style>
+
+      <div class="tnr-head">
+        <span class="tnr-badge">{badge_text}</span>
+        <span class="tnr-title">Analisis Kondisi Jalan</span>
+      </div>
+
+      {''.join(slides_html)}
+
+      <div class="tnr-nav">
+        <button class="tnr-btn" id="tnr-prev">&#8249; Sebelumnya</button>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div class="tnr-dots">{dots}</div>
+          <span class="tnr-counter" id="tnr-counter">1 / {len(sections)}</span>
+        </div>
+        <button class="tnr-btn" id="tnr-next">Berikutnya &#8250;</button>
+      </div>
+    </div>
+
+    <script>
+      (function() {{
+        let idx = 0;
+        const slides = document.querySelectorAll('.tnr-slide');
+        const dots = document.querySelectorAll('.tnr-dot');
+        const counter = document.getElementById('tnr-counter');
+        const prevBtn = document.getElementById('tnr-prev');
+        const nextBtn = document.getElementById('tnr-next');
+        const total = slides.length;
+
+        function render() {{
+          slides.forEach((s, i) => s.style.display = (i === idx) ? 'block' : 'none');
+          dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+          counter.textContent = (idx + 1) + ' / ' + total;
+          prevBtn.disabled = (idx === 0);
+          nextBtn.disabled = (idx === total - 1);
+        }}
+        prevBtn.addEventListener('click', () => {{ if (idx > 0) {{ idx--; render(); }} }});
+        nextBtn.addEventListener('click', () => {{ if (idx < total - 1) {{ idx++; render(); }} }});
+        dots.forEach((d, i) => d.addEventListener('click', () => {{ idx = i; render(); }}));
+        render();
+      }})();
+    </script>
+    """
+    return html
 
 
 # ----------------------------------------------------------------------
@@ -688,7 +826,7 @@ if image is not None:
                 "Coba turunkan confidence threshold.")
 
     # ------------------------------------------------------------------
-    # Langkah 4 - Analisis & rekomendasi AI
+    # Langkah 4 - Analisis & rekomendasi AI (tampilan SLIDE)
     # ------------------------------------------------------------------
     st.markdown('<hr>', unsafe_allow_html=True)
     st.markdown('<div class="kick">Langkah 4</div>', unsafe_allow_html=True)
@@ -703,9 +841,16 @@ if image is not None:
             text, src = get_ai_insight(total, counts, avg_conf, per_class_conf)
         st.session_state["ai_insight"] = {"sig": sig, "text": text, "src": src}
 
+    # Debug: tampilkan error asli Gemini kalau ada, biar mudah diagnosis
+    if st.session_state.get("_ai_error"):
+        with st.expander("Info debug (klik jika analisis masih 'Ringkasan otomatis')"):
+            st.error(st.session_state["_ai_error"])
+
     data = st.session_state.get("ai_insight")
     if data and data["sig"] == sig:
-        st.markdown(build_insight_html(data["text"], data["src"]), unsafe_allow_html=True)
+        slide_html = build_insight_slides_html(data["text"], data["src"])
+        # tinggi disesuaikan agar slide + navigasi tidak terpotong
+        components.html(slide_html, height=460, scrolling=True)
         st.markdown(
             '<p class="disc">Analisis di atas bersifat pendukung dan tidak menggantikan '
             'pemeriksaan teknis lapangan. Akurasi model masih terbatas (baseline mAP@50 '
